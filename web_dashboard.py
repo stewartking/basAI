@@ -4,45 +4,46 @@ from data_simulator import simulate
 from ai_diagnosis import analyze
 
 app = Flask(__name__)
-app.config["LATEST_STATUS"] = "Starting…"
-app.config["LATEST_TIMESTAMP"] = None
 
+# Shared data dictionary
+latest = {"status": "Starting…", "timestamp": None}
+
+# Background worker that updates 'latest'
 def worker():
-    with app.app_context():  # ✅ needed for config access in thread
-        while True:
-            print("🚀 Worker running...")
-            data = simulate()
-            print("📡 Simulated data:", data)
-            result = analyze(data)
-            print("🧠 AI result:", result)
-            app.config["LATEST_STATUS"] = result
-            app.config["LATEST_TIMESTAMP"] = data["timestamp"]
-            time.sleep(60)
+    while True:
+        print("🚀 Worker running...")
+        data = simulate()
+        print("📡 Simulated data:", data)
+        result = analyze(data)
+        print("🧠 AI result:", result)
 
+        latest["status"] = result.get("summary", str(result))
+        latest["timestamp"] = data.get("timestamp")
+
+        time.sleep(60)
+
+# Start worker as soon as app starts
+threading.Thread(target=worker, daemon=True).start()
+
+# HTML template
 TEMPLATE = """
 <html>
 <head><title>Building AI Dashboard</title></head>
 <body>
 <h1>Building AI Dashboard</h1>
 <p><strong>Last run:</strong> {{ ts }}</p>
-<pre>{{ status | tojson(indent=2) }}</pre>
+<pre>{{ status }}</pre>
 </body>
 </html>
 """
 
 @app.route("/")
 def index():
-    print("📥 Dashboard hit — latest:", app.config["LATEST_STATUS"])
-    return render_template_string(
-        TEMPLATE,
-        status=app.config["LATEST_STATUS"],
-        ts=app.config["LATEST_TIMESTAMP"]
-    )
-
-# ✅ Start worker *after* app is defined
-threading.Thread(target=worker, daemon=True).start()
+    print(f"📥 Dashboard hit — latest: {latest}")
+    return render_template_string(TEMPLATE, status=latest["status"], ts=latest["timestamp"])
 
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
