@@ -1,8 +1,7 @@
 from flask import Flask, render_template_string
-import threading, time, json
+import threading, time
 from data_simulator import simulate
 from ai_diagnosis import analyze
-import os
 
 app = Flask(__name__)
 latest = {"status": "Starting…", "timestamp": None}
@@ -14,17 +13,9 @@ def worker():
         print("📡 Simulated data:", data)
         result = analyze(data)
         print("🧠 AI result:", result)
-
-        summary = result.get("summary", "")
-        summary = summary.strip("`").replace("```json", "").replace("```", "").strip()
-        latest["status"] = summary
+        latest["status"] = result
         latest["timestamp"] = data["timestamp"]
-
         time.sleep(60)
-
-
-# ✅ Start the background AI processing loop immediately
-threading.Thread(target=worker, daemon=True).start()
 
 TEMPLATE = """
 <html>
@@ -42,8 +33,11 @@ def index():
     print("📥 Dashboard hit — latest:", latest)
     return render_template_string(TEMPLATE, status=latest["status"], ts=latest["timestamp"])
 
+# ✅ Start the worker thread only when the app is imported
+threading.Thread(target=worker, daemon=True).start()
+
+# ✅ Use this for local dev only
 if __name__ == "__main__":
+    import os
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
-
