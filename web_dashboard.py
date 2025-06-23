@@ -14,9 +14,14 @@ def worker():
         print("📡 Simulated data:", data)
         result = analyze(data)
         print("🧠 AI result:", result)
-        latest["status"] = result
+
+        summary = result.get("summary", "")
+        summary = summary.strip("`").replace("```json", "").replace("```", "").strip()
+        latest["status"] = summary
         latest["timestamp"] = data["timestamp"]
+
         time.sleep(60)
+
 
 # ✅ Start the background AI processing loop immediately
 threading.Thread(target=worker, daemon=True).start()
