@@ -8,8 +8,11 @@ latest = {"status": "Starting…", "timestamp": None}
 
 def worker():
     while True:
+        print("🚀 Worker running...")
         data = simulate()
+        print("📡 Simulated data:", data)
         result = analyze(data)
+        print("🧠 AI result:", result)
         latest["status"] = result
         latest["timestamp"] = data["timestamp"]
         time.sleep(60)
