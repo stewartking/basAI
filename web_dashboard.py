@@ -4,21 +4,20 @@ from data_simulator import simulate
 from ai_diagnosis import analyze
 
 app = Flask(__name__)
-
-# ✅ Store shared data in app.config
 app.config["LATEST_STATUS"] = "Starting…"
 app.config["LATEST_TIMESTAMP"] = None
 
 def worker():
-    while True:
-        print("🚀 Worker running...")
-        data = simulate()
-        print("📡 Simulated data:", data)
-        result = analyze(data)
-        print("🧠 AI result:", result)
-        app.config["LATEST_STATUS"] = result
-        app.config["LATEST_TIMESTAMP"] = data["timestamp"]
-        time.sleep(60)
+    with app.app_context():  # ✅ needed for config access in thread
+        while True:
+            print("🚀 Worker running...")
+            data = simulate()
+            print("📡 Simulated data:", data)
+            result = analyze(data)
+            print("🧠 AI result:", result)
+            app.config["LATEST_STATUS"] = result
+            app.config["LATEST_TIMESTAMP"] = data["timestamp"]
+            time.sleep(60)
 
 TEMPLATE = """
 <html>
@@ -40,7 +39,7 @@ def index():
         ts=app.config["LATEST_TIMESTAMP"]
     )
 
-# ✅ Start the worker thread
+# ✅ Start worker *after* app is defined
 threading.Thread(target=worker, daemon=True).start()
 
 if __name__ == "__main__":
