@@ -2,6 +2,7 @@ from flask import Flask, render_template_string
 import threading, time, json
 from data_simulator import simulate
 from ai_diagnosis import analyze
+import os
 
 app = Flask(__name__)
 latest = {"status": "Starting…", "timestamp": None}
@@ -17,6 +18,7 @@ def worker():
         latest["timestamp"] = data["timestamp"]
         time.sleep(60)
 
+# ✅ Start the background AI processing loop immediately
 threading.Thread(target=worker, daemon=True).start()
 
 TEMPLATE = """
@@ -35,9 +37,6 @@ def index():
     return render_template_string(TEMPLATE, status=latest["status"], ts=latest["timestamp"])
 
 if __name__ == "__main__":
-    threading.Thread(target=worker, daemon=True).start()
-
-    import os
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
