@@ -1,1 +1,6 @@
-
+services:
+  - type: web
+    name: building-ai-dashboard
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn web_dashboard:app
