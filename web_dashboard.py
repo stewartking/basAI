@@ -39,6 +39,7 @@ TEMPLATE = """
 
 @app.route("/")
 def index():
+    print("📥 Dashboard hit — latest:", latest)
     return render_template_string(TEMPLATE, status=latest["status"], ts=latest["timestamp"])
 
 if __name__ == "__main__":
