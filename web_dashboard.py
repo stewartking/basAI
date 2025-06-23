@@ -12,7 +12,7 @@ def worker():
         result = analyze(data)
         latest["status"] = result
         latest["timestamp"] = data["timestamp"]
-        time.sleep(15 * 60)
+        time.sleep(60)
 
 threading.Thread(target=worker, daemon=True).start()
 
