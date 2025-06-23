@@ -4,7 +4,10 @@ from data_simulator import simulate
 from ai_diagnosis import analyze
 
 app = Flask(__name__)
-latest = {"status": "Starting…", "timestamp": None}
+
+# ✅ Store shared data in app.config
+app.config["LATEST_STATUS"] = "Starting…"
+app.config["LATEST_TIMESTAMP"] = None
 
 def worker():
     while True:
@@ -13,8 +16,8 @@ def worker():
         print("📡 Simulated data:", data)
         result = analyze(data)
         print("🧠 AI result:", result)
-        latest["status"] = result
-        latest["timestamp"] = data["timestamp"]
+        app.config["LATEST_STATUS"] = result
+        app.config["LATEST_TIMESTAMP"] = data["timestamp"]
         time.sleep(60)
 
 TEMPLATE = """
@@ -30,13 +33,16 @@ TEMPLATE = """
 
 @app.route("/")
 def index():
-    print("📥 Dashboard hit — latest:", latest)
-    return render_template_string(TEMPLATE, status=latest["status"], ts=latest["timestamp"])
+    print("📥 Dashboard hit — latest:", app.config["LATEST_STATUS"])
+    return render_template_string(
+        TEMPLATE,
+        status=app.config["LATEST_STATUS"],
+        ts=app.config["LATEST_TIMESTAMP"]
+    )
 
-# ✅ Start the worker thread only when the app is imported
+# ✅ Start the worker thread
 threading.Thread(target=worker, daemon=True).start()
 
-# ✅ Use this for local dev only
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 10000))
