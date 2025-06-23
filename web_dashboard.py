@@ -4,11 +4,9 @@ from data_simulator import simulate
 from ai_diagnosis import analyze
 
 app = Flask(__name__)
-
-# Shared data dictionary
 latest = {"status": "Starting…", "timestamp": None}
 
-# Background worker that updates 'latest'
+# ✅ Worker function
 def worker():
     while True:
         print("🚀 Worker running...")
@@ -16,32 +14,32 @@ def worker():
         print("📡 Simulated data:", data)
         result = analyze(data)
         print("🧠 AI result:", result)
-
-        latest["status"] = result.get("summary", str(result))
-        latest["timestamp"] = data.get("timestamp")
-
+        latest["status"] = result
+        latest["timestamp"] = data["timestamp"]
         time.sleep(60)
 
-# Start worker as soon as app starts
+# ✅ Start worker on import (will run even in Gunicorn)
 threading.Thread(target=worker, daemon=True).start()
 
-# HTML template
+# ✅ HTML template
 TEMPLATE = """
 <html>
 <head><title>Building AI Dashboard</title></head>
 <body>
 <h1>Building AI Dashboard</h1>
 <p><strong>Last run:</strong> {{ ts }}</p>
-<pre>{{ status }}</pre>
+<pre>{{ status | tojson(indent=2) }}</pre>
 </body>
 </html>
 """
 
+# ✅ Flask route
 @app.route("/")
 def index():
-    print(f"📥 Dashboard hit — latest: {latest}")
+    print("📥 Dashboard hit — latest:", latest)
     return render_template_string(TEMPLATE, status=latest["status"], ts=latest["timestamp"])
 
+# ✅ Use correct port for Render
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 10000))
