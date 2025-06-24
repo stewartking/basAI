@@ -36,7 +36,7 @@ def worker():
             print("📡 Simulated data:", data)
             result = analyze(data)
             print("🧠 AI result:", result)
-            # Ensure result is JSON-serializable
+            # Store result as JSON string
             data_store["status"] = json.dumps(result) if isinstance(result, dict) else str(result)
             data_store["timestamp"] = data.get("timestamp") or time.strftime("%Y-%m-%dT%H:%M:%SZ")
             data_store["error"] = None
@@ -49,12 +49,11 @@ def worker():
             save_data_store(data_store)
         time.sleep(60)
 
-# Start worker thread
 print("Starting worker thread...")
 thread = threading.Thread(target=worker, daemon=True)
 thread.start()
 
-# HTML template with auto-refresh
+# HTML template with improved JSON formatting
 TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -62,18 +61,29 @@ TEMPLATE = """
     <title>Building AI Dashboard</title>
     <meta http-equiv="refresh" content="60"> <!-- Refresh every 60 seconds -->
     <style>
-        pre { background: #f4f4f4; padding: 10px; border-radius: 5px; }
-        .error { color: red; }
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1 { color: #333; }
+        .timestamp { color: #555; }
+        .error { color: red; font-weight: bold; }
+        pre { 
+            background: #f4f4f4; 
+            padding: 15px; 
+            border-radius: 5px; 
+            white-space: pre-wrap; 
+            word-wrap: break-word; 
+            font-size: 14px;
+            line-height: 1.5;
+        }
     </style>
 </head>
 <body>
     <h1>Building AI Dashboard</h1>
-    <p><strong>Last run:</strong> {{ ts }}</p>
+    <p class="timestamp"><strong>Last run:</strong> {{ ts }}</p>
     {% if error %}
     <p class="error"><strong>Error:</strong> {{ error }}</p>
     {% endif %}
     <h2>Building Status</h2>
-    <pre>{{ status | safe }}</pre>
+    <pre>{{ formatted_status | safe }}</pre>
 </body>
 </html>
 """
@@ -81,18 +91,27 @@ TEMPLATE = """
 @app.route("/")
 def index():
     """Render dashboard with latest data."""
-    # Reload data_store to ensure latest data (optional for robustness)
     global data_store
     data_store = load_data_store()
     print("📥 Dashboard hit — latest:", data_store)
     try:
-        # Parse status as JSON if possible
-        status = json.loads(data_store["status"]) if data_store["status"] else "No data"
-    except json.JSONDecodeError:
-        status = data_store["status"]
+        # Parse status as JSON
+        status = json.loads(data_store["status"]) if data_store["status"] else {}
+        # Extract inner JSON from summary field, removing ```json markers
+        if isinstance(status, dict) and "summary" in status:
+            # Remove ```json and ``` markers
+            summary_str = status["summary"].strip()
+            if summary_str.startswith("```json\n") and summary_str.endswith("\n```"):
+                summary_str = summary_str[8:-4]
+            formatted_status = json.dumps(json.loads(summary_str), indent=2)
+        else:
+            formatted_status = json.dumps(status, indent=2)
+    except (json.JSONDecodeError, ValueError) as e:
+        formatted_status = data_store["status"] or "No data available"
+        data_store["error"] = f"Failed to parse status: {str(e)}"
     return render_template_string(
         TEMPLATE,
-        status=status,
+        formatted_status=formatted_status,
         ts=data_store["timestamp"],
         error=data_store.get("error")
     )
@@ -101,4 +120,3 @@ if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
