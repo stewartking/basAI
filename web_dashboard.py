@@ -10,7 +10,6 @@ DATA_FILE = "/tmp/building_data_history.json"
 MAX_HISTORY = 50
 
 def load_data_store():
-    """Load data history from file or initialize if not exists."""
     try:
         with open(DATA_FILE, "r") as f:
             data = json.load(f)
@@ -20,7 +19,6 @@ def load_data_store():
         return []
 
 def save_data_store(data):
-    """Save data history to file, keeping up to MAX_HISTORY entries."""
     try:
         data = data[:MAX_HISTORY]
         with open(DATA_FILE, "w") as f:
@@ -31,14 +29,13 @@ def save_data_store(data):
 data_store = load_data_store()
 
 def worker():
-    """Background worker to simulate and analyze BAS data."""
     while True:
         print("🚀 Worker running...")
         try:
             data = simulate()
-            print("📡 Simulated data:", data)
+            print("📡 Simulated data:", json.dumps(data, indent=2))
             result = analyze(data)
-            print("🧠 AI result:", result)
+            print("🧠 AI result:", json.dumps(result, indent=2))
             entry = {
                 "status": json.dumps(result) if isinstance(result, dict) else str(result),
                 "timestamp": data.get("timestamp") or time.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -49,7 +46,7 @@ def worker():
         except Exception as e:
             print("❌ Error in worker:", e)
             entry = {
-                "status": json.dumps({"summary": "Error occurred", "abnormalities": {}, "recommendations": {}}),
+                "status": json.dumps({"summary": "Error occurred", "abnormalities": [], "recommendations": []}),
                 "error": str(e),
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ")
             }
@@ -61,7 +58,7 @@ print("Starting worker thread...")
 thread = threading.Thread(target=worker, daemon=True)
 thread.start()
 
-# HTML template with Tailwind CSS and dynamic updates
+# HTML template with Tailwind CSS and detailed equipment display
 TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -101,7 +98,9 @@ TEMPLATE = """
                     <tbody>
                         <tr>
                             <td class="border border-gray-200 px-4 py-2 text-sm text-gray-600">Summary</td>
-                            <td class="border border-gray-200 px-4 py-2 text-sm text-gray-800">{{ entry.status.summary }}</td>
+                            <td class="border border-gray-200 px-4 py-2 text-sm text-gray-800">
+                                {{ entry.status.summary | default('No summary available') }}
+                            </td>
                         </tr>
                         <tr>
                             <td class="border border-gray-200 px-4 py-2 text-sm text-gray-600">Abnormalities</td>
@@ -110,9 +109,19 @@ TEMPLATE = """
                                     {% if entry.status.abnormalities is mapping %}
                                         {% for equipment, details in entry.status.abnormalities.items() %}
                                             <strong>{{ equipment }}:</strong><br>
-                                            {% for key, value in details.items() %}
-                                                {{ key }}: {{ value }}<br>
-                                            {% endfor %}
+                                            {% if details is string %}
+                                                {{ details }}<br>
+                                            {% elif details is mapping %}
+                                                {% for key, value in details.items() %}
+                                                    {{ key }}: {{ value }}<br>
+                                                {% endfor %}
+                                            {% else %}
+                                                <ul class="list-disc pl-4">
+                                                {% for item in details %}
+                                                    <li>{{ item }}</li>
+                                                {% endfor %}
+                                                </ul>
+                                            {% endif %}
                                         {% endfor %}
                                     {% else %}
                                         <ul class="list-disc pl-4">
@@ -134,7 +143,11 @@ TEMPLATE = """
                                         {% for equipment, details in entry.status.recommendations.items() %}
                                             <strong>{{ equipment }}:</strong><br>
                                             {% if details is string %}
-                                                {{ details }}
+                                                {{ details }}<br>
+                                            {% elif details is mapping %}
+                                                {% for key, value in details.items() %}
+                                                    {{ key }}: {{ value }}<br>
+                                                {% endfor %}
                                             {% else %}
                                                 <ul class="list-disc pl-4">
                                                 {% for rec in details %}
@@ -142,7 +155,6 @@ TEMPLATE = """
                                                 {% endfor %}
                                                 </ul>
                                             {% endif %}
-                                            <br>
                                         {% endfor %}
                                     {% else %}
                                         <ul class="list-disc pl-4">
@@ -186,7 +198,9 @@ TEMPLATE = """
                             <tbody>
                                 <tr>
                                     <td class="border border-gray-200 px-4 py-2 text-sm text-gray-600">Summary</td>
-                                    <td class="border border-gray-200 px-4 py-2 text-sm text-gray-800">${newEntry.status.summary}</td>
+                                    <td class="border border-gray-200 px-4 py-2 text-sm text-gray-800">
+                                        ${newEntry.status.summary || 'No summary available'}
+                                    </td>
                                 </tr>
                                 <tr>
                                     <td class="border border-gray-200 px-4 py-2 text-sm text-gray-600">Abnormalities</td>
@@ -196,7 +210,9 @@ TEMPLATE = """
                                                 `<ul class="list-disc pl-4">${newEntry.status.abnormalities.map(item => `<li>${item}</li>`).join('')}</ul>` :
                                                 Object.entries(newEntry.status.abnormalities).map(([equip, details]) => `
                                                     <strong>${equip}:</strong><br>
-                                                    ${Object.entries(details).map(([k, v]) => `${k}: ${v}<br>`).join('')}
+                                                    ${typeof details === 'string' ? details :
+                                                      Array.isArray(details) ? `<ul class="list-disc pl-4">${details.map(item => `<li>${item}</li>`).join('')}</ul>` :
+                                                      Object.entries(details).map(([k, v]) => `${k}: ${v}<br>`).join('')}
                                                 `).join('')
                                         ) : 'None'}
                                     </td>
@@ -210,8 +226,8 @@ TEMPLATE = """
                                                 Object.entries(newEntry.status.recommendations).map(([equip, details]) => `
                                                     <strong>${equip}:</strong><br>
                                                     ${typeof details === 'string' ? details :
-                                                      `<ul class="list-disc pl-4">${details.map(rec => `<li>${rec}</li>`).join('')}</ul>`}
-                                                    <br>
+                                                      Array.isArray(details) ? `<ul class="list-disc pl-4">${details.map(rec => `<li>${rec}</li>`).join('')}</ul>` :
+                                                      Object.entries(details).map(([k, v]) => `${k}: ${v}<br>`).join('')}
                                                 `).join('')
                                         ) : 'None'}
                                     </td>
@@ -242,21 +258,28 @@ TEMPLATE = """
 
 @app.route("/")
 def index():
-    """Render dashboard with historical data."""
     global data_store
     data_store = load_data_store()
-    print("📥 Dashboard hit — latest:", data_store[:2])
+    print("📥 Dashboard hit — latest:", json.dumps(data_store[:2], indent=2))
     processed_data = []
     for entry in data_store:
         try:
             status = json.loads(entry["status"]) if entry["status"] else {}
+            # Handle LLM output with nested JSON in summary
             if isinstance(status, dict) and "summary" in status:
                 summary_str = status["summary"].strip()
                 if summary_str.startswith("```json\n") and summary_str.endswith("\n```"):
                     summary_str = summary_str[8:-4]
-                status = json.loads(summary_str)
-            else:
-                status = {"summary": "No data available", "abnormalities": [], "recommendations": []}
+                    try:
+                        status = json.loads(summary_str)
+                    except (json.JSONDecodeError, ValueError):
+                        status = {"summary": summary_str, "abnormalities": [], "recommendations": []}
+            # Ensure status has required fields
+            status = {
+                "summary": str(status.get("summary", "No summary available")),
+                "abnormalities": status.get("abnormalities", []),
+                "recommendations": status.get("recommendations", [])
+            }
             processed_data.append({"status": status, "timestamp": entry["timestamp"], "error": entry.get("error")})
         except (json.JSONDecodeError, ValueError, TypeError) as e:
             print(f"⚠️ Error parsing status for timestamp {entry['timestamp']}: {e}")
@@ -269,7 +292,6 @@ def index():
 
 @app.route("/latest")
 def latest():
-    """Return the latest data entry for AJAX updates."""
     global data_store
     data_store = load_data_store()
     if not data_store:
@@ -285,9 +307,15 @@ def latest():
             summary_str = status["summary"].strip()
             if summary_str.startswith("```json\n") and summary_str.endswith("\n```"):
                 summary_str = summary_str[8:-4]
-            status = json.loads(summary_str)
-        else:
-            status = {"summary": "No data available", "abnormalities": [], "recommendations": []}
+                try:
+                    status = json.loads(summary_str)
+                except (json.JSONDecodeError, ValueError):
+                    status = {"summary": summary_str, "abnormalities": [], "recommendations": []}
+        status = {
+            "summary": str(status.get("summary", "No summary available")),
+            "abnormalities": status.get("abnormalities", []),
+            "recommendations": status.get("recommendations", [])
+        }
     except (json.JSONDecodeError, ValueError, TypeError) as e:
         print(f"⚠️ Error parsing latest status: {e}")
         status = {"summary": "Error parsing data", "abnormalities": [], "recommendations": []}
@@ -296,7 +324,6 @@ def latest():
 
 @app.route("/debug")
 def debug():
-    """Return raw data_store for debugging."""
     try:
         with open(DATA_FILE, "r") as f:
             return f"<pre>{json.dumps(json.load(f), indent=2)}</pre>"
