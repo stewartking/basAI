@@ -1,3 +1,4 @@
+# ai_diagnosis.py
 import os, openai, json
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -9,8 +10,9 @@ Given this data:
 Provide:
 1. A summary of current status.
 2. Any abnormal readings.
-3. Possible chances and what to do.
+3. Possible causes and what to do.
 Return JSON with keys: summary, abnormalities, recommendations.
+Do not wrap the response in a code block.
 """
 
 def analyze(data_json):
@@ -20,7 +22,12 @@ def analyze(data_json):
         messages=[{"role": "user", "content": prompt}],
         temperature=0.2
     )
+    content = resp.choices[0].message.content
+    # Strip code block if present
+    if content.startswith("```json\n") and content.endswith("\n```"):
+        content = content[8:-4]
     try:
-        return json.loads(resp.choices[0].message.content)
-    except Exception:
-        return {"summary": resp.choices[0].message.content, "abnormalities": [], "recommendations": []}
+        return json.loads(content)
+    except Exception as e:
+        print(f"⚠️ Error parsing LLM response: {e}")
+        return {"summary": "Error parsing AI response", "abnormalities": [], "recommendations": []}
