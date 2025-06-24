@@ -7,7 +7,7 @@ app = Flask(__name__, static_folder="static")
 
 # File-based storage for data history
 DATA_FILE = "/tmp/building_data_history.json"
-MAX_HISTORY = 50
+MAX_HISTORY = 20  # Reduced for performance
 
 def load_data_store():
     try:
@@ -28,7 +28,7 @@ def save_data_store(data):
 
 data_store = load_data_store()
 
-def safe_json_dump(obj, indent=None, max_length=1000):
+def safe_json_dump(obj, indent=None, max_length=500):
     """Safely dump JSON, truncating if too large for logs."""
     try:
         json_str = json.dumps(obj, indent=indent)
@@ -36,9 +36,9 @@ def safe_json_dump(obj, indent=None, max_length=1000):
             summary = {
                 "size": len(json_str),
                 "keys": list(obj.keys()) if isinstance(obj, dict) else "non-dict",
-                "sample": json_str[:200] + "..."
+                "sample": json_str[:100] + "..."
             }
-            return f"Truncated (full size: {len(json_str)} bytes): {json.dumps(summary, indent=2)}"
+            return f"Truncated (size: {len(json_str)} bytes): {json.dumps(summary, indent=2)}"
         return json_str
     except (TypeError, ValueError) as e:
         return f"JSON dump error: {str(e)}"
@@ -79,30 +79,22 @@ def format_summary(summary_data, raw_data=None):
     """Convert summary or raw data into a human-readable narrative."""
     try:
         lines = []
-        # Try LLM summary first
         if isinstance(summary_data, dict):
             if "chillerSystem" in summary_data:
                 chiller = summary_data["chillerSystem"]
                 comps = chiller.get("totalCompressorsRunning", "N/A")
                 chilled = chiller.get("chilledWaterSupplyTemp", "N/A")
-                fan = chiller.get("coolingTowerFanSpeed", "N/A")
-                lines.append(f"Chiller: {comps} compressors, chilled water at {chilled}°F, cooling tower fan at {fan}%.")
+                lines.append(f"Chiller: {comps} compressors running, chilled water at {chilled}°F.")
             if "boilerSystem" in summary_data:
                 boiler = summary_data["boilerSystem"]
                 boilers = boiler.get("boilersOn", "N/A")
                 hot = boiler.get("hotWaterSupplyTemp", "N/A")
-                pump = boiler.get("pumpStatus", "Unknown")
-                lines.append(f"Boiler: {boilers} boiler(s) on, hot water at {hot}°F, pump {pump.lower()}.")
+                lines.append(f"Boiler: {boilers} boiler(s) on, hot water at {hot}°F.")
             if "airHandlers" in summary_data:
                 ahu = summary_data["airHandlers"]
                 ahus = ahu.get("totalAHUs", "N/A")
                 supply = ahu.get("averageSupplyAirTemp", "N/A")
-                lines.append(f"Air Handlers: {ahus} AHUs, supply air at {supply}°F.")
-            if "radiators" in summary_data:
-                rad = summary_data["radiators"]
-                rads = rad.get("totalRadiators", "N/A")
-                temp = rad.get("averageSpaceTemp", "N/A")
-                lines.append(f"Radiators: {rads} radiators, space temp at {temp}°F.")
+                lines.append(f"Air Handlers: {ahus} AHUs, average supply air at {supply}°F.")
             if lines:
                 return " ".join(lines)
         
@@ -113,26 +105,18 @@ def format_summary(summary_data, raw_data=None):
                 chiller = equipment["ChillerSystem"]
                 comps = sum(1 for k in chiller if k.startswith("Compressor") and chiller[k].get("status") == "Running")
                 chilled = chiller.get("chilledWaterSupplyTemp", "N/A")
-                fan = chiller.get("coolingTowerFanSpeed", "N/A")
-                lines.append(f"Chiller: {comps} compressors, chilled water at {chilled}°F, cooling tower fan at {fan}%.")
+                lines.append(f"Chiller: {comps} compressors running, chilled water at {chilled}°F.")
             if "BoilerSystem" in equipment:
                 boiler = equipment["BoilerSystem"]
                 boilers = sum(1 for k in boiler if k.startswith("Boiler") and boiler[k].get("burnerStatus") == "On")
                 hot = boiler.get("hotWaterSupplyTemp", "N/A")
-                pump = boiler.get("pumpStatus", "Unknown")
-                lines.append(f"Boiler: {boilers} boiler(s) on, hot water at {hot}°F, pump {pump.lower()}.")
+                lines.append(f"Boiler: {boilers} boiler(s) on, hot water at {hot}°F.")
             if "AirHandlers" in equipment:
                 ahu = equipment["AirHandlers"]
                 ahus = len([k for k in ahu if k.startswith("AHU")])
                 supply_temps = [ahu[k].get("supplyAirTemp", 0) for k in ahu if k.startswith("AHU")]
                 supply = round(sum(supply_temps) / len(supply_temps), 1) if supply_temps else "N/A"
-                lines.append(f"Air Handlers: {ahus} AHUs, supply air at {supply}°F.")
-            if "Radiators" in equipment:
-                rad = equipment["Radiators"]
-                rads = len([k for k in rad if k.startswith("Rad")])
-                temps = [rad[k].get("spaceTemp", 0) for k in rad if k.startswith("Rad")]
-                temp = round(sum(temps) / len(temps), 1) if temps else "N/A"
-                lines.append(f"Radiators: {rads} radiators, space temp at {temp}°F.")
+                lines.append(f"Air Handlers: {ahus} AHUs, average supply air at {supply}°F.")
             if lines:
                 return " ".join(lines)
         
@@ -141,37 +125,72 @@ def format_summary(summary_data, raw_data=None):
         print(f"⚠️ Error formatting summary: {e}")
         return f"Error formatting summary: {str(e)}"
 
-def format_abnormalities(abnormalities):
+def format_abnormalities(abnormalities, raw_data=None):
     """Convert abnormalities into a list of readable strings."""
-    if not abnormalities:
-        return []
     try:
+        result = []
         if isinstance(abnormalities, list):
-            return [
-                f"{ab['component']}: {ab['issue']} ({ab.get('value', '')}{', normal range: ' + ab['normalRange'] if 'normalRange' in ab else ''})"
-                for ab in abnormalities if isinstance(ab, dict) and "component" in ab and "issue" in ab
-            ]
-        return []
+            for ab in abnormalities:
+                if isinstance(ab, dict) and "component" in ab and "issue" in ab:
+                    value = f" ({ab.get('value', '')}{', normal range: ' + ab['normalRange'] if 'normalRange' in ab else ''})"
+                    result.append(f"{ab['component']}: {ab['issue']}{value}")
+        
+        # Fallback: Check raw_data
+        if not result and raw_data and isinstance(raw_data, dict) and "equipment" in raw_data:
+            equipment = raw_data["equipment"]
+            if "ChillerSystem" in equipment:
+                chiller = equipment["ChillerSystem"]
+                for i in range(1, 4):
+                    comp = chiller.get(f"Compressor0{i}")
+                    if comp and comp.get("dischargePressure", 0) > 350:
+                        result.append(f"Compressor0{i}: High discharge pressure ({comp['dischargePressure']} psig, normal range: 300-350)")
+            if "BoilerSystem" in equipment:
+                boiler = equipment["BoilerSystem"]
+                for i in range(1, 3):
+                    b = boiler.get(f"Boiler0{i}")
+                    if b and b.get("burnerStatus") == "Off" and b.get("supplyTemp", 0) > 150:
+                        result.append(f"Boiler0{i}: Burner off but high supply temp ({b['supplyTemp']}°F)")
+            if "AirHandlers" in equipment:
+                ahu = equipment["AirHandlers"]
+                for i in range(1, 4):
+                    unit = ahu.get(f"AHU0{i}")
+                    if unit and unit.get("supplyAirTemp", 0) < 58:
+                        result.append(f"AHU0{i}: Low supply air temperature ({unit['supplyAirTemp']}°F, normal range: 58-62)")
+        
+        return result
     except Exception as e:
         print(f"⚠️ Error formatting abnormalities: {e}")
         return []
 
-def format_recommendations(recommendations):
+def format_recommendations(recommendations, abnormalities):
     """Convert recommendations into a list of readable strings."""
-    if not recommendations:
-        return []
     try:
+        result = []
         if isinstance(recommendations, list):
-            return [
-                f"{rec['action']} (Priority: {rec.get('priority', 'N/A')})"
-                for rec in recommendations if isinstance(rec, dict) and "action" in rec
-            ]
-        return []
+            for rec in recommendations:
+                if isinstance(rec, dict) and "action" in rec:
+                    priority = f" (Priority: {rec.get('priority', 'N/A')})"
+                    result.append(f"{rec['action']}{priority}")
+        
+        # Fallback: Generate recommendations
+        if abnormalities and not result:
+            result = []
+            if any("Compressor" in ab for ab in abnormalities):
+                result.extend([
+                    "Check chiller condenser for fouling or scaling (Priority: High)",
+                    "Inspect cooling tower fan operation (Priority: Medium)"
+                ])
+            if any("Boiler" in ab for ab in abnormalities):
+                result.append("Investigate boiler sensor or control issues (Priority: Medium)")
+            if any("AHU" in ab for ab in abnormalities):
+                result.append("Check AHU cooling coils and temperature sensors (Priority: Medium)")
+        
+        return result
     except Exception as e:
         print(f"⚠️ Error formatting recommendations: {e}")
         return []
 
-# HTML template with fixed loop and polished design
+# HTML template with polished design
 TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -182,32 +201,38 @@ TEMPLATE = """
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body { font-family: 'Inter', sans-serif; }
-        .data-card { transition: all 0.3s ease; border-radius: 0.75rem; }
-        .data-card:hover { transform: translateY(-4px); box-shadow: 0 6px 20px rgba(0,0,0,0.1); }
+        .data-card { transition: all 0.3s ease; border-radius: 1rem; }
+        .data-card:hover { transform: translateY(-4px); box-shadow: 0 8px 24px rgba(0,0,0,0.15); }
         .error { color: #ef4444; }
-        th, td { padding: 1.25rem; }
-        .summary-text { line-height: 1.7; font-size: 1rem; }
-        .timestamp { font-size: 0.875rem; color: #6b7280; }
+        th, td { padding: 1rem; }
+        .summary-text { line-height: 1.6; font-size: 0.95rem; }
+        .timestamp { font-size: 0.85rem; color: #6b7280; }
+        .alert { background-color: #fef2f2; border-left: 4px solid #ef4444; padding: 0.75rem; margin-bottom: 1rem; }
     </style>
 </head>
-<body class="bg-gray-100">
-    <div class="max-w-6xl mx-auto p-8">
-        <div class="mb-8 flex items-center">
-            <img src="{{ url_for('static', filename='logo.png') }}" alt="Company Logo" class="h-16 w-auto" onerror="this.src='https://via.placeholder.com/150x50?text=Your+Logo'">
-            <h1 class="text-3xl font-bold text-gray-900 ml-4">Building AI Dashboard</h1>
+<body class="bg-gray-50">
+    <div class="max-w-5xl mx-auto p-6">
+        <div class="mb-6 flex items-center">
+            <img src="{{ url_for('static', filename='logo.png') }}" alt="Company Logo" class="h-12 w-auto" onerror="this.src='https://via.placeholder.com/150x50?text=Your+Logo'">
+            <h1 class="text-2xl font-bold text-gray-900 ml-4">Building AI Dashboard</h1>
         </div>
         <div id="data-container">
             {% for entry in data_store %}
-            <div class="data-card bg-white shadow-md mb-8">
-                <div class="p-6">
+            <div class="data-card bg-white shadow-lg mb-6">
+                <div class="p-5">
                     <p class="timestamp mb-2">Timestamp: {{ entry.timestamp }}</p>
                     {% if entry.error %}
-                    <p class="error font-semibold mb-4">Error: {{ entry.error }}</p>
+                    <p class="error font-semibold mb-3">Error: {{ entry.error }}</p>
                     {% endif %}
-                    <h2 class="text-xl font-semibold text-gray-800 mb-4">Building Status</h2>
+                    {% if entry.status.abnormalities|length > 0 %}
+                    <div class="alert">
+                        <p class="text-sm font-semibold text-red-600">Attention: {{ entry.status.abnormalities|length }} issue(s) detected</p>
+                    </div>
+                    {% endif %}
+                    <h2 class="text-lg font-semibold text-gray-800 mb-3">Building Status</h2>
                     <table class="w-full border-collapse">
                         <thead>
-                            <tr class="bg-gray-50">
+                            <tr class="bg-gray-100">
                                 <th class="border border-gray-200 text-left text-sm font-semibold text-gray-700">Section</th>
                                 <th class="border border-gray-200 text-left text-sm font-semibold text-gray-700">Details</th>
                             </tr>
@@ -249,7 +274,7 @@ TEMPLATE = """
                     </table>
                 </div>
             </div>
-            <hr class="border-gray-200 my-6">
+            <hr class="border-gray-200 my-4">
             {% endfor %}
         </div>
     </div>
@@ -261,15 +286,20 @@ TEMPLATE = """
                 if (newEntry && newEntry.timestamp) {
                     const container = document.getElementById('data-container');
                     const div = document.createElement('div');
-                    div.className = 'data-card bg-white shadow-md mb-8';
+                    div.className = 'data-card bg-white shadow-lg mb-6';
                     div.innerHTML = `
-                        <div class="p-6">
+                        <div class="p-5">
                             <p class="timestamp mb-2">Timestamp: ${newEntry.timestamp}</p>
-                            ${newEntry.error ? `<p class="error font-semibold mb-4">Error: ${newEntry.error}</p>` : ''}
-                            <h2 class="text-xl font-semibold text-gray-800 mb-4">Building Status</h2>
+                            ${newEntry.error ? `<p class="error font-semibold mb-3">Error: ${newEntry.error}</p>` : ''}
+                            ${newEntry.status.abnormalities.length > 0 ? `
+                                <div class="alert">
+                                    <p class="text-sm font-semibold text-red-600">Attention: ${newEntry.status.abnormalities.length} issue(s) detected</p>
+                                </div>
+                            ` : ''}
+                            <h2 class="text-lg font-semibold text-gray-800 mb-3">Building Status</h2>
                             <table class="w-full border-collapse">
                                 <thead>
-                                    <tr class="bg-gray-50">
+                                    <tr class="bg-gray-100">
                                         <th class="border border-gray-200 text-left text-sm font-semibold text-gray-700">Section</th>
                                         <th class="border border-gray-200 text-left text-sm font-semibold text-gray-700">Details</th>
                                     </tr>
@@ -305,7 +335,7 @@ TEMPLATE = """
                     `;
                     container.insertBefore(div, container.firstChild);
                     const hr = document.createElement('hr');
-                    hr.className = 'border-gray-200 my-6';
+                    hr.className = 'border-gray-200 my-4';
                     container.insertBefore(hr, div.nextSibling);
                     const cards = container.querySelectorAll('.data-card');
                     if (cards.length > {{ MAX_HISTORY }}) {
@@ -338,43 +368,25 @@ def index():
             abnormalities = status.get("abnormalities", [])
             recommendations = status.get("recommendations", [])
             
-            # Parse JSON code block in summary
+            # Parse JSON code block
             if isinstance(summary, str) and summary.startswith("```json\n") and summary.endswith("\n```"):
                 try:
                     nested_data = json.loads(summary[8:-4])
                     if isinstance(nested_data, dict):
-                        # Extract nested fields
                         summary = nested_data.get("summary", summary)
                         abnormalities = nested_data.get("abnormalities", abnormalities)
                         recommendations = nested_data.get("recommendations", recommendations)
                 except (json.JSONDecodeError, ValueError) as e:
                     print(f"⚠️ Error parsing JSON code block: {e}")
             
-            # Format summary
+            # Format data
             if isinstance(summary, dict):
                 summary = format_summary(summary, raw_data)
             elif not summary.strip() or summary == "No summary available":
                 summary = format_summary({}, raw_data)
             
-            # Format abnormalities and recommendations
-            abnormalities = format_abnormalities(abnormalities)
-            recommendations = format_recommendations(recommendations)
-            
-            # Fallback abnormalities
-            if not abnormalities and raw_data.get("equipment", {}).get("ChillerSystem"):
-                chiller = raw_data["equipment"]["ChillerSystem"]
-                for i in range(1, 7):  # Check all compressors
-                    comp = chiller.get(f"Compressor0{i}")
-                    if comp and comp.get("dischargePressure", 0) > 350:  # Stricter threshold to align with LLM
-                        abnormalities.append(f"Compressor0{i}: High discharge pressure ({comp['dischargePressure']} psig)")
-            
-            # Fallback recommendations
-            if abnormalities and not recommendations:
-                recommendations = [
-                    "Check condenser water flow rate.",
-                    "Inspect cooling tower fan speed.",
-                    "Verify condenser for fouling or scaling."
-                ]
+            abnormalities = format_abnormalities(abnormalities, raw_data)
+            recommendations = format_recommendations(recommendations, abnormalities)
             
             status = {
                 "summary": str(summary),
@@ -420,31 +432,14 @@ def latest():
             except (json.JSONDecodeError, ValueError) as e:
                 print(f"⚠️ Error parsing JSON code block: {e}")
         
-        # Format summary
+        # Format data
         if isinstance(summary, dict):
             summary = format_summary(summary, raw_data)
         elif not summary.strip() or summary == "No summary available":
             summary = format_summary({}, raw_data)
         
-        # Format abnormalities and recommendations
-        abnormalities = format_abnormalities(abnormalities)
-        recommendations = format_recommendations(recommendations)
-        
-        # Fallback abnormalities
-        if not abnormalities and raw_data.get("equipment", {}).get("ChillerSystem"):
-            chiller = raw_data["equipment"]["ChillerSystem"]
-            for i in range(1, 7):
-                comp = chiller.get(f"Compressor0{i}")
-                if comp and comp.get("dischargePressure", 0) > 350:
-                    abnormalities.append(f"Compressor0{i}: High discharge pressure ({comp['dischargePressure']} psig)")
-        
-        # Fallback recommendations
-        if abnormalities and not recommendations:
-            recommendations = [
-                "Check condenser water flow rate.",
-                "Inspect cooling tower fan speed.",
-                "Verify condenser for fouling or scaling."
-            ]
+        abnormalities = format_abnormalities(abnormalities, raw_data)
+        recommendations = format_recommendations(recommendations, abnormalities)
         
         status = {
             "summary": str(summary),
