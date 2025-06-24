@@ -4,24 +4,34 @@ from data_simulator import simulate
 from ai_diagnosis import analyze
 
 app = Flask(__name__)
-latest = {"status": "Starting…", "timestamp": None}
 
-# ✅ Worker function
+# Move latest inside a class to avoid scope issues
+data_store = {
+    "status": "Starting…",
+    "timestamp": None
+}
+
+# Worker function
+
 def worker():
     while True:
         print("🚀 Worker running...")
-        data = simulate()
-        print("📡 Simulated data:", data)
-        result = analyze(data)
-        print("🧠 AI result:", result)
-        latest["status"] = result
-        latest["timestamp"] = data["timestamp"]
+        try:
+            data = simulate()
+            print("📡 Simulated data:", data)
+            result = analyze(data)
+            print("🧠 AI result:", result)
+            data_store["status"] = result
+            data_store["timestamp"] = data.get("timestamp")
+        except Exception as e:
+            print("❌ Error in worker:", e)
         time.sleep(60)
 
-# ✅ Start worker on import (will run even in Gunicorn)
-threading.Thread(target=worker, daemon=True).start()
+# Start worker in background (outside __main__ so it runs in Gunicorn)
+thread = threading.Thread(target=worker, daemon=True)
+thread.start()
 
-# ✅ HTML template
+# HTML template
 TEMPLATE = """
 <html>
 <head><title>Building AI Dashboard</title></head>
@@ -33,13 +43,16 @@ TEMPLATE = """
 </html>
 """
 
-# ✅ Flask route
 @app.route("/")
 def index():
-    print("📥 Dashboard hit — latest:", latest)
-    return render_template_string(TEMPLATE, status=latest["status"], ts=latest["timestamp"])
+    print("📥 Dashboard hit — latest:", data_store)
+    return render_template_string(
+        TEMPLATE,
+        status=data_store["status"],
+        ts=data_store["timestamp"]
+    )
 
-# ✅ Use correct port for Render
+# Only for local testing; Render uses gunicorn
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 10000))
