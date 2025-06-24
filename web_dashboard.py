@@ -28,27 +28,44 @@ def save_data_store(data):
 
 data_store = load_data_store()
 
+def safe_json_dump(obj, indent=None, max_length=1000):
+    """Safely dump JSON, truncating if too large for logs."""
+    try:
+        json_str = json.dumps(obj, indent=indent)
+        if len(json_str) > max_length and indent:
+            summary = {
+                "size": len(json_str),
+                "keys": list(obj.keys()) if isinstance(obj, dict) else "non-dict",
+                "sample": json_str[:200] + "..."
+            }
+            return f"Truncated (full size: {len(json_str)} bytes): {json.dumps(summary, indent=2)}"
+        return json_str
+    except (TypeError, ValueError) as e:
+        return f"JSON dump error: {str(e)}"
+
 def worker():
     while True:
         print("🚀 Worker running...")
         try:
             data = simulate()
-            print("📡 Simulated data:", json.dumps(data, indent=2))
+            print("📡 Simulated data:", safe_json_dump(data, indent=2))
             result = analyze(data)
-            print("🧠 AI result:", json.dumps(result, indent=2))
+            print("🧠 AI result:", safe_json_dump(result, indent=2))
             entry = {
                 "status": json.dumps(result) if isinstance(result, dict) else str(result),
                 "timestamp": data.get("timestamp") or time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "error": None
+                "error": None,
+                "raw_data": json.dumps(data)
             }
             data_store.insert(0, entry)
             save_data_store(data_store)
         except Exception as e:
-            print("❌ Error in worker:", e)
+            print("❌ Error in worker:", str(e))
             entry = {
                 "status": json.dumps({"summary": "Error occurred", "abnormalities": [], "recommendations": []}),
                 "error": str(e),
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ")
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "raw_data": "{}"
             }
             data_store.insert(0, entry)
             save_data_store(data_store)
@@ -58,49 +75,103 @@ print("Starting worker thread...")
 thread = threading.Thread(target=worker, daemon=True)
 thread.start()
 
-def format_summary(summary_data):
-    """Convert JSON summary into a human-readable narrative."""
-    if not isinstance(summary_data, dict):
-        return "No summary data available."
-    
+def format_summary(summary_data, raw_data=None):
+    """Convert summary or raw data into a human-readable narrative."""
     try:
         lines = []
-        # ChillerSystem
-        if "ChillerSystem" in summary_data:
-            chiller = summary_data["ChillerSystem"]
-            comps = chiller.get("totalCompressorsRunning", 0)
-            chilled_supply = chiller.get("chilledWaterSupplyTemp", "N/A")
-            cooling_fan = chiller.get("coolingTowerFanSpeed", "N/A")
-            lines.append(f"Chiller System: {comps} compressors running, chilled water supply at {chilled_supply}°F, cooling tower fan at {cooling_fan}%.")
+        # Try LLM summary first
+        if isinstance(summary_data, dict):
+            if "chillerSystem" in summary_data:
+                chiller = summary_data["chillerSystem"]
+                comps = chiller.get("totalCompressorsRunning", "N/A")
+                chilled = chiller.get("chilledWaterSupplyTemp", "N/A")
+                fan = chiller.get("coolingTowerFanSpeed", "N/A")
+                lines.append(f"Chiller: {comps} compressors, chilled water at {chilled}°F, cooling tower fan at {fan}%.")
+            if "boilerSystem" in summary_data:
+                boiler = summary_data["boilerSystem"]
+                boilers = boiler.get("boilersOn", "N/A")
+                hot = boiler.get("hotWaterSupplyTemp", "N/A")
+                pump = boiler.get("pumpStatus", "Unknown")
+                lines.append(f"Boiler: {boilers} boiler(s) on, hot water at {hot}°F, pump {pump.lower()}.")
+            if "airHandlers" in summary_data:
+                ahu = summary_data["airHandlers"]
+                ahus = ahu.get("totalAHUs", "N/A")
+                supply = ahu.get("averageSupplyAirTemp", "N/A")
+                lines.append(f"Air Handlers: {ahus} AHUs, supply air at {supply}°F.")
+            if "radiators" in summary_data:
+                rad = summary_data["radiators"]
+                rads = rad.get("totalRadiators", "N/A")
+                temp = rad.get("averageSpaceTemp", "N/A")
+                lines.append(f"Radiators: {rads} radiators, space temp at {temp}°F.")
+            if lines:
+                return " ".join(lines)
         
-        # BoilerSystem
-        if "BoilerSystem" in summary_data:
-            boiler = summary_data["BoilerSystem"]
-            boilers_on = boiler.get("boilersOn", 0)
-            hot_supply = boiler.get("hotWaterSupplyTemp", "N/A")
-            pump = boiler.get("pumpStatus", "Unknown")
-            lines.append(f"Boiler System: {boilers_on} boiler(s) on, hot water supply at {hot_supply}°F, pump {pump.lower()}.")
+        # Fallback to raw_data
+        if raw_data and isinstance(raw_data, dict) and "equipment" in raw_data:
+            equipment = raw_data["equipment"]
+            if "ChillerSystem" in equipment:
+                chiller = equipment["ChillerSystem"]
+                comps = sum(1 for k in chiller if k.startswith("Compressor") and chiller[k].get("status") == "Running")
+                chilled = chiller.get("chilledWaterSupplyTemp", "N/A")
+                fan = chiller.get("coolingTowerFanSpeed", "N/A")
+                lines.append(f"Chiller: {comps} compressors, chilled water at {chilled}°F, cooling tower fan at {fan}%.")
+            if "BoilerSystem" in equipment:
+                boiler = equipment["BoilerSystem"]
+                boilers = sum(1 for k in boiler if k.startswith("Boiler") and boiler[k].get("burnerStatus") == "On")
+                hot = boiler.get("hotWaterSupplyTemp", "N/A")
+                pump = boiler.get("pumpStatus", "Unknown")
+                lines.append(f"Boiler: {boilers} boiler(s) on, hot water at {hot}°F, pump {pump.lower()}.")
+            if "AirHandlers" in equipment:
+                ahu = equipment["AirHandlers"]
+                ahus = len([k for k in ahu if k.startswith("AHU")])
+                supply_temps = [ahu[k].get("supplyAirTemp", 0) for k in ahu if k.startswith("AHU")]
+                supply = round(sum(supply_temps) / len(supply_temps), 1) if supply_temps else "N/A"
+                lines.append(f"Air Handlers: {ahus} AHUs, supply air at {supply}°F.")
+            if "Radiators" in equipment:
+                rad = equipment["Radiators"]
+                rads = len([k for k in rad if k.startswith("Rad")])
+                temps = [rad[k].get("spaceTemp", 0) for k in rad if k.startswith("Rad")]
+                temp = round(sum(temps) / len(temps), 1) if temps else "N/A"
+                lines.append(f"Radiators: {rads} radiators, space temp at {temp}°F.")
+            if lines:
+                return " ".join(lines)
         
-        # AirHandlers
-        if "AirHandlers" in summary_data:
-            ahu = summary_data["AirHandlers"]
-            total_ahus = ahu.get("totalAHUs", 0)
-            supply_air = ahu.get("averageSupplyAirTemp", "N/A")
-            lines.append(f"Air Handlers: {total_ahus} AHUs operating, average supply air at {supply_air}°F.")
-        
-        # Radiators
-        if "Radiators" in summary_data:
-            rad = summary_data["Radiators"]
-            total_rads = rad.get("totalRadiators", 0)
-            space_temp = rad.get("averageSpaceTemp", "N/A")
-            lines.append(f"Radiators: {total_rads} radiators, average space temperature at {space_temp}°F.")
-        
-        return " ".join(lines) if lines else "No system data available."
+        return "No system data available."
     except Exception as e:
         print(f"⚠️ Error formatting summary: {e}")
-        return "Error formatting summary data."
+        return f"Error formatting summary: {str(e)}"
 
-# HTML template with enhanced polish
+def format_abnormalities(abnormalities):
+    """Convert abnormalities into a list of readable strings."""
+    if not abnormalities:
+        return []
+    try:
+        if isinstance(abnormalities, list):
+            return [
+                f"{ab['component']}: {ab['issue']} ({ab.get('value', '')}{', normal range: ' + ab['normalRange'] if 'normalRange' in ab else ''})"
+                for ab in abnormalities if isinstance(ab, dict) and "component" in ab and "issue" in ab
+            ]
+        return []
+    except Exception as e:
+        print(f"⚠️ Error formatting abnormalities: {e}")
+        return []
+
+def format_recommendations(recommendations):
+    """Convert recommendations into a list of readable strings."""
+    if not recommendations:
+        return []
+    try:
+        if isinstance(recommendations, list):
+            return [
+                f"{rec['action']} (Priority: {rec.get('priority', 'N/A')})"
+                for rec in recommendations if isinstance(rec, dict) and "action" in rec
+            ]
+        return []
+    except Exception as e:
+        print(f"⚠️ Error formatting recommendations: {e}")
+        return []
+
+# HTML template with fixed loop and polished design
 TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -111,33 +182,34 @@ TEMPLATE = """
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body { font-family: 'Inter', sans-serif; }
-        .data-card { transition: all 0.3s ease; border-radius: 0.5rem; }
-        .data-card:hover { transform: translateY(-2px); box-shadow: 0 10px 15px rgba(0, 0, 0, 0.1); }
+        .data-card { transition: all 0.3s ease; border-radius: 0.75rem; }
+        .data-card:hover { transform: translateY(-4px); box-shadow: 0 6px 20px rgba(0,0,0,0.1); }
         .error { color: #ef4444; }
-        th, td { padding: 0.75rem 1rem; }
-        .summary-text { line-height: 1.6; }
+        th, td { padding: 1.25rem; }
+        .summary-text { line-height: 1.7; font-size: 1rem; }
+        .timestamp { font-size: 0.875rem; color: #6b7280; }
     </style>
 </head>
-<body class="bg-gray-50">
-    <div class="max-w-5xl mx-auto p-8">
+<body class="bg-gray-100">
+    <div class="max-w-6xl mx-auto p-8">
         <div class="mb-8 flex items-center">
-            <img src="{{ url_for('static', filename='logo.png') }}" alt="Company Logo" class="h-14 w-auto" onerror="this.src='https://via.placeholder.com/150x50?text=Your+Logo'">
-            <h1 class="text-4xl font-bold text-gray-800 ml-4">Building AI Dashboard</h1>
+            <img src="{{ url_for('static', filename='logo.png') }}" alt="Company Logo" class="h-16 w-auto" onerror="this.src='https://via.placeholder.com/150x50?text=Your+Logo'">
+            <h1 class="text-3xl font-bold text-gray-900 ml-4">Building AI Dashboard</h1>
         </div>
         <div id="data-container">
             {% for entry in data_store %}
-            <div class="data-card bg-white shadow-lg mb-8">
+            <div class="data-card bg-white shadow-md mb-8">
                 <div class="p-6">
-                    <p class="text-sm text-gray-500 mb-2">Timestamp: {{ entry.timestamp }}</p>
+                    <p class="timestamp mb-2">Timestamp: {{ entry.timestamp }}</p>
                     {% if entry.error %}
                     <p class="error font-semibold mb-4">Error: {{ entry.error }}</p>
                     {% endif %}
-                    <h2 class="text-xl font-semibold text-gray-700 mb-4">Building Status</h2>
+                    <h2 class="text-xl font-semibold text-gray-800 mb-4">Building Status</h2>
                     <table class="w-full border-collapse">
                         <thead>
-                            <tr class="bg-gray-100">
-                                <th class="border border-gray-200 text-left text-sm font-semibold text-gray-600">Section</th>
-                                <th class="border border-gray-200 text-left text-sm font-semibold text-gray-600">Details</th>
+                            <tr class="bg-gray-50">
+                                <th class="border border-gray-200 text-left text-sm font-semibold text-gray-700">Section</th>
+                                <th class="border border-gray-200 text-left text-sm font-semibold text-gray-700">Details</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -149,30 +221,11 @@ TEMPLATE = """
                                 <td class="border border-gray-200 text-sm font-medium text-gray-600">Abnormalities</td>
                                 <td class="border border-gray-200 text-sm {% if entry.status.abnormalities|length > 0 %}text-red-600{% else %}text-green-600{% endif %}">
                                     {% if entry.status.abnormalities %}
-                                        {% if entry.status.abnormalities is mapping %}
-                                            {% for equipment, details in entry.status.abnormalities.items() %}
-                                                <strong>{{ equipment }}:</strong><br>
-                                                {% if details is string %}
-                                                    {{ details }}<br>
-                                                {% elif details is mapping %}
-                                                    {% for key, value in details.items() %}
-                                                        {{ key }}: {{ value }}<br>
-                                                    {% endfor %}
-                                                {% else %}
-                                                    <ul class="list-disc pl-4">
-                                                    {% for item in details %}
-                                                        <li>{{ item }}</li>
-                                                    {% endfor %}
-                                                    </ul>
-                                                {% endif %}
-                                            {% endfor %}
-                                        {% else %}
-                                            <ul class="list-disc pl-4">
+                                        <ul class="list-disc pl-4">
                                             {% for item in entry.status.abnormalities %}
                                                 <li>{{ item }}</li>
                                             {% endfor %}
-                                            </ul>
-                                        {% endif %}
+                                        </ul>
                                     {% else %}
                                         None
                                     {% endif %}
@@ -182,30 +235,11 @@ TEMPLATE = """
                                 <td class="border border-gray-200 text-sm font-medium text-gray-600">Recommendations</td>
                                 <td class="border border-gray-200 text-sm text-gray-800">
                                     {% if entry.status.recommendations %}
-                                        {% if entry.status.recommendations is mapping %}
-                                            {% for equipment, details in entry.status.recommendations.items() %}
-                                                <strong>{{ equipment }}:</strong><br>
-                                                {% if details is string %}
-                                                    {{ details }}<br>
-                                                {% elif details is mapping %}
-                                                    {% for key, value in details.items() %}
-                                                        {{ key }}: {{ value }}<br>
-                                                    {% endfor %}
-                                                {% else %}
-                                                    <ul class="list-disc pl-4">
-                                                    {% for rec in details %}
-                                                        <li>{{ rec }}</li>
-                                                    {% endfor %}
-                                                    </ul>
-                                                {% endif %}
-                                            {% endfor %}
-                                        {% else %}
-                                            <ul class="list-disc pl-4">
+                                        <ul class="list-disc pl-4">
                                             {% for item in entry.status.recommendations %}
                                                 <li>{{ item }}</li>
                                             {% endfor %}
-                                            </ul>
-                                        {% endif %}
+                                        </ul>
                                     {% else %}
                                         None
                                     {% endif %}
@@ -215,7 +249,7 @@ TEMPLATE = """
                     </table>
                 </div>
             </div>
-            <hr class="border-gray-300 my-6">
+            <hr class="border-gray-200 my-6">
             {% endfor %}
         </div>
     </div>
@@ -227,17 +261,17 @@ TEMPLATE = """
                 if (newEntry && newEntry.timestamp) {
                     const container = document.getElementById('data-container');
                     const div = document.createElement('div');
-                    div.className = 'data-card bg-white shadow-lg mb-8';
+                    div.className = 'data-card bg-white shadow-md mb-8';
                     div.innerHTML = `
                         <div class="p-6">
-                            <p class="text-sm text-gray-500 mb-2">Timestamp: ${newEntry.timestamp}</p>
+                            <p class="timestamp mb-2">Timestamp: ${newEntry.timestamp}</p>
                             ${newEntry.error ? `<p class="error font-semibold mb-4">Error: ${newEntry.error}</p>` : ''}
-                            <h2 class="text-xl font-semibold text-gray-700 mb-4">Building Status</h2>
+                            <h2 class="text-xl font-semibold text-gray-800 mb-4">Building Status</h2>
                             <table class="w-full border-collapse">
                                 <thead>
-                                    <tr class="bg-gray-100">
-                                        <th class="border border-gray-200 text-left text-sm font-semibold text-gray-600">Section</th>
-                                        <th class="border border-gray-200 text-left text-sm font-semibold text-gray-600">Details</th>
+                                    <tr class="bg-gray-50">
+                                        <th class="border border-gray-200 text-left text-sm font-semibold text-gray-700">Section</th>
+                                        <th class="border border-gray-200 text-left text-sm font-semibold text-gray-700">Details</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -248,31 +282,21 @@ TEMPLATE = """
                                     <tr>
                                         <td class="border border-gray-200 text-sm font-medium text-gray-600">Abnormalities</td>
                                         <td class="border border-gray-200 text-sm ${newEntry.status.abnormalities.length > 0 ? 'text-red-600' : 'text-green-600'}">
-                                            ${newEntry.status.abnormalities.length > 0 ? (
-                                                Array.isArray(newEntry.status.abnormalities) ?
-                                                    `<ul class="list-disc pl-4">${newEntry.status.abnormalities.map(item => `<li>${item}</li>`).join('')}</ul>` :
-                                                    Object.entries(newEntry.status.abnormalities).map(([equip, details]) => `
-                                                        <strong>${equip}:</strong><br>
-                                                        ${typeof details === 'string' ? details :
-                                                          Array.isArray(details) ? `<ul class="list-disc pl-4">${details.map(item => `<li>${item}</li>`).join('')}</ul>` :
-                                                          Object.entries(details).map(([k, v]) => `${k}: ${v}<br>`).join('')}
-                                                    `).join('')
-                                            ) : 'None'}
+                                            ${newEntry.status.abnormalities.length > 0 ? `
+                                                <ul class="list-disc pl-4">
+                                                    ${newEntry.status.abnormalities.map(item => `<li>${item}</li>`).join('')}
+                                                </ul>
+                                            ` : 'None'}
                                         </td>
                                     </tr>
                                     <tr>
                                         <td class="border border-gray-200 text-sm font-medium text-gray-600">Recommendations</td>
                                         <td class="border border-gray-200 text-sm text-gray-800">
-                                            ${newEntry.status.recommendations.length > 0 ? (
-                                                Array.isArray(newEntry.status.recommendations) ?
-                                                    `<ul class="list-disc pl-4">${newEntry.status.recommendations.map(item => `<li>${item}</li>`).join('')}</ul>` :
-                                                    Object.entries(newEntry.status.recommendations).map(([equip, details]) => `
-                                                        <strong>${equip}:</strong><br>
-                                                        ${typeof details === 'string' ? details :
-                                                          Array.isArray(details) ? `<ul class="list-disc pl-4">${details.map(rec => `<li>${rec}</li>`).join('')}</ul>` :
-                                                          Object.entries(details).map(([k, v]) => `${k}: ${v}<br>`).join('')}
-                                                    `).join('')
-                                            ) : 'None'}
+                                            ${newEntry.status.recommendations.length > 0 ? `
+                                                <ul class="list-disc pl-4">
+                                                    ${newEntry.status.recommendations.map(item => `<li>${item}</li>`).join('')}
+                                                </ul>
+                                            ` : 'None'}
                                         </td>
                                     </tr>
                                 </tbody>
@@ -281,7 +305,7 @@ TEMPLATE = """
                     `;
                     container.insertBefore(div, container.firstChild);
                     const hr = document.createElement('hr');
-                    hr.className = 'border-gray-300 my-6';
+                    hr.className = 'border-gray-200 my-6';
                     container.insertBefore(hr, div.nextSibling);
                     const cards = container.querySelectorAll('.data-card');
                     if (cards.length > {{ MAX_HISTORY }}) {
@@ -304,26 +328,58 @@ TEMPLATE = """
 def index():
     global data_store
     data_store = load_data_store()
-    print("📥 Dashboard hit — latest:", json.dumps(data_store[:2], indent=2))
+    print("📥 Dashboard hit — latest:", safe_json_dump(data_store[:2], indent=2))
     processed_data = []
     for entry in data_store:
         try:
             status = json.loads(entry["status"]) if entry["status"] else {}
-            # Handle LLM output
+            raw_data = json.loads(entry.get("raw_data", "{}"))
             summary = status.get("summary", "No summary available")
-            if isinstance(summary, dict):
-                summary = format_summary(summary)
-            elif isinstance(summary, str) and summary.startswith("```json\n") and summary.endswith("\n```"):
+            abnormalities = status.get("abnormalities", [])
+            recommendations = status.get("recommendations", [])
+            
+            # Parse JSON code block in summary
+            if isinstance(summary, str) and summary.startswith("```json\n") and summary.endswith("\n```"):
                 try:
-                    summary = json.loads(summary[8:-4])
-                    summary = format_summary(summary)
-                except (json.JSONDecodeError, ValueError):
-                    pass  # Use raw summary string
-            # Ensure status has required fields
+                    nested_data = json.loads(summary[8:-4])
+                    if isinstance(nested_data, dict):
+                        # Extract nested fields
+                        summary = nested_data.get("summary", summary)
+                        abnormalities = nested_data.get("abnormalities", abnormalities)
+                        recommendations = nested_data.get("recommendations", recommendations)
+                except (json.JSONDecodeError, ValueError) as e:
+                    print(f"⚠️ Error parsing JSON code block: {e}")
+            
+            # Format summary
+            if isinstance(summary, dict):
+                summary = format_summary(summary, raw_data)
+            elif not summary.strip() or summary == "No summary available":
+                summary = format_summary({}, raw_data)
+            
+            # Format abnormalities and recommendations
+            abnormalities = format_abnormalities(abnormalities)
+            recommendations = format_recommendations(recommendations)
+            
+            # Fallback abnormalities
+            if not abnormalities and raw_data.get("equipment", {}).get("ChillerSystem"):
+                chiller = raw_data["equipment"]["ChillerSystem"]
+                for i in range(1, 7):  # Check all compressors
+                    comp = chiller.get(f"Compressor0{i}")
+                    if comp and comp.get("dischargePressure", 0) > 350:  # Stricter threshold to align with LLM
+                        abnormalities.append(f"Compressor0{i}: High discharge pressure ({comp['dischargePressure']} psig)")
+            
+            # Fallback recommendations
+            if abnormalities and not recommendations:
+                recommendations = [
+                    "Check condenser water flow rate.",
+                    "Inspect cooling tower fan speed.",
+                    "Verify condenser for fouling or scaling."
+                ]
+            
             status = {
                 "summary": str(summary),
-                "abnormalities": status.get("abnormalities", []),
-                "recommendations": status.get("recommendations", [])
+                "abnormalities": abnormalities,
+                "recommendations": recommendations
             }
             processed_data.append({"status": status, "timestamp": entry["timestamp"], "error": entry.get("error")})
         except (json.JSONDecodeError, ValueError, TypeError) as e:
@@ -348,19 +404,52 @@ def latest():
     entry = data_store[0]
     try:
         status = json.loads(entry["status"]) if entry["status"] else {}
+        raw_data = json.loads(entry.get("raw_data", "{}"))
         summary = status.get("summary", "No summary available")
-        if isinstance(summary, dict):
-            summary = format_summary(summary)
-        elif isinstance(summary, str) and summary.startswith("```json\n") and summary.endswith("\n```"):
+        abnormalities = status.get("abnormalities", [])
+        recommendations = status.get("recommendations", [])
+        
+        # Parse JSON code block
+        if isinstance(summary, str) and summary.startswith("```json\n") and summary.endswith("\n```"):
             try:
-                summary = json.loads(summary[8:-4])
-                summary = format_summary(summary)
-            except (json.JSONDecodeError, ValueError):
-                pass  # Use raw summary string
+                nested_data = json.loads(summary[8:-4])
+                if isinstance(nested_data, dict):
+                    summary = nested_data.get("summary", summary)
+                    abnormalities = nested_data.get("abnormalities", abnormalities)
+                    recommendations = nested_data.get("recommendations", recommendations)
+            except (json.JSONDecodeError, ValueError) as e:
+                print(f"⚠️ Error parsing JSON code block: {e}")
+        
+        # Format summary
+        if isinstance(summary, dict):
+            summary = format_summary(summary, raw_data)
+        elif not summary.strip() or summary == "No summary available":
+            summary = format_summary({}, raw_data)
+        
+        # Format abnormalities and recommendations
+        abnormalities = format_abnormalities(abnormalities)
+        recommendations = format_recommendations(recommendations)
+        
+        # Fallback abnormalities
+        if not abnormalities and raw_data.get("equipment", {}).get("ChillerSystem"):
+            chiller = raw_data["equipment"]["ChillerSystem"]
+            for i in range(1, 7):
+                comp = chiller.get(f"Compressor0{i}")
+                if comp and comp.get("dischargePressure", 0) > 350:
+                    abnormalities.append(f"Compressor0{i}: High discharge pressure ({comp['dischargePressure']} psig)")
+        
+        # Fallback recommendations
+        if abnormalities and not recommendations:
+            recommendations = [
+                "Check condenser water flow rate.",
+                "Inspect cooling tower fan speed.",
+                "Verify condenser for fouling or scaling."
+            ]
+        
         status = {
             "summary": str(summary),
-            "abnormalities": status.get("abnormalities", []),
-            "recommendations": status.get("recommendations", [])
+            "abnormalities": abnormalities,
+            "recommendations": recommendations
         }
     except (json.JSONDecodeError, ValueError, TypeError) as e:
         print(f"⚠️ Error parsing latest status: {e}")
